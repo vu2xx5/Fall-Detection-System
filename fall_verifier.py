@@ -51,12 +51,12 @@ class FallVerifier:
 
     def __init__(
         self,
-        prob_threshold: float = 0.75,
-        prob_reset: float = 0.40,
+        prob_threshold: float = 0.65,
+        prob_reset: float = 0.35,
         upright_angle_deg: float = 35.0,
-        horizontal_angle_deg: float = 55.0,
-        transition_sec: float = 1.5,
-        hold_sec: float = 1.0,
+        horizontal_angle_deg: float = 50.0,
+        transition_sec: float = 2.0,
+        hold_sec: float = 0.8,
         recovery_sec: float = 2.0,
     ) -> None:
         if prob_reset > prob_threshold:
@@ -73,9 +73,11 @@ class FallVerifier:
         self._recovery_sec = recovery_sec
 
         self._high_prob_since: float | None = None
+        self._last_confirmed_prob_time: float | None = None
         self._horizontal_since: float | None = None
         self._last_upright_time: float | None = None
-        self._last_sitting_time: float | None = None
+        self._sitting_since: float | None = None
+        self._had_stable_sitting: bool = False
         self._last_update_time: float | None = None
         self._prev_angle: float | None = None
 
@@ -87,9 +89,11 @@ class FallVerifier:
     def reset(self) -> None:
         """Xoá toàn bộ trạng thái thời gian (dùng khi mất dấu người)."""
         self._high_prob_since = None
+        self._last_confirmed_prob_time = None
         self._horizontal_since = None
         self._last_upright_time = None
-        self._last_sitting_time = None
+        self._sitting_since = None
+        self._had_stable_sitting = False
         self._last_update_time = None
         self._prev_angle = None
         self._is_fallen = False
@@ -118,7 +122,6 @@ class FallVerifier:
         # Bắt buộc duy trì cảnh báo ĐỎ chừng nào đối tượng chưa đứng dậy vững vàng.
         if self._is_fallen:
             self._last_update_time = now
-            # Kiểm tra xem đối tượng có đang đứng dậy thật sự hay không
             if (
                 torso_angle_deg is not None
                 and torso_angle_deg <= self._upright_angle
@@ -132,11 +135,12 @@ class FallVerifier:
                     self._fallen_since = None
                     self._standing_since = None
                     self._last_upright_time = now
+                    self._sitting_since = None
+                    self._had_stable_sitting = False
                     self._horizontal_since = None
                     self._high_prob_since = None
                     return Verdict(False, VerdictReason.UPRIGHT)
             else:
-                # Vẫn đang nằm, quẫy đạp hoặc ngồi bệt dưới sàn -> reset đồng hồ đứng
                 self._standing_since = None
 
             return Verdict(True, VerdictReason.CONFIRMED)
@@ -152,11 +156,16 @@ class FallVerifier:
             self._last_update_time = now
 
             if is_sitting:
-                # Đang ngồi lưng thẳng: ghi nhận thời gian ngồi, không ghi nhận là đứng
-                self._last_sitting_time = now
+                if self._sitting_since is None:
+                    self._sitting_since = now
+                elif now - self._sitting_since >= 0.8:
+                    # Đã ngồi ổn định ít nhất 0.8s
+                    self._had_stable_sitting = True
                 return Verdict(False, VerdictReason.SITTING)
 
-            # Đang đứng thẳng (standing)
+            # Đang đứng thẳng (standing): reset cờ ngồi
+            self._sitting_since = None
+            self._had_stable_sitting = False
             self._last_upright_time = now
             return Verdict(False, VerdictReason.UPRIGHT)
 
@@ -174,8 +183,8 @@ class FallVerifier:
                 self._last_update_time = now
                 return Verdict(False, VerdictReason.NO_TRANSITION)
 
-            # Chặn báo ngã nếu vừa ở tư thế ngồi gần đây (ngồi xuống rồi ngả lưng nằm)
-            if self._last_sitting_time is not None and (now - self._last_sitting_time <= 3.0):
+            # Chặn nếu người này ĐÃ NGỒI ỔN ĐỊNH trước khi nằm (ngồi xuống sàn rồi nằm)
+            if self._had_stable_sitting:
                 self._prev_angle = torso_angle_deg
                 self._last_update_time = now
                 return Verdict(False, VerdictReason.SLOW_LIE_DOWN)
@@ -191,10 +200,16 @@ class FallVerifier:
         horizontal_for = now - self._horizontal_since
         prob_for = 0.0 if self._high_prob_since is None else now - self._high_prob_since
 
+        # AI đồng ý nếu xác suất đang duy trì cao hoặc vừa có đợt prob cao (>= 0.15s) trong 2.5s qua
+        has_ai_fall_evidence = (
+            prob_for >= self._hold_sec
+            or (self._last_confirmed_prob_time is not None and (now - self._last_confirmed_prob_time <= 2.5))
+        )
+
         self._prev_angle = torso_angle_deg
         self._last_update_time = now
 
-        if horizontal_for >= self._hold_sec and prob_for >= self._hold_sec:
+        if horizontal_for >= self._hold_sec and has_ai_fall_evidence:
             # Xác nhận cú ngã thành công và kích hoạt chốt trạng thái ngã
             self._is_fallen = True
             self._fallen_since = now
@@ -207,6 +222,9 @@ class FallVerifier:
         if fall_prob >= self._prob_threshold:
             if self._high_prob_since is None:
                 self._high_prob_since = now
+            # Cần duy trì ít nhất 0.15s (2-3 frame) để tránh gai nhiễu đơn lẻ 1 frame
+            if now - self._high_prob_since >= 0.15:
+                self._last_confirmed_prob_time = now
         elif fall_prob < self._prob_reset:
             self._high_prob_since = None
 

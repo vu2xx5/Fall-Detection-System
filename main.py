@@ -30,7 +30,7 @@ from renderer import draw_hud, draw_person
 from track_state import PersonTrackState
 
 WINDOW_TITLE = "Multi-Person Fall Detection System (Bi-LSTM + YOLOv8-Pose)"
-YOLO_CONFIDENCE = 0.4
+YOLO_CONFIDENCE = 0.25
 STALE_CHECK_INTERVAL = 60
 
 
