@@ -1,183 +1,231 @@
+"""Điểm khởi chạy: phát hiện té ngã đa đối tượng theo thời gian thực.
+
+Kiến trúc: YOLOv8-Pose + ByteTrack lấy khung xương và ID từng người,
+Bi-LSTM + Attention dự đoán trên chuỗi 30 frame, và :class:`FallVerifier`
+(hình học + thời gian) chỉ xác nhận ngã khi thân người thật sự nằm ngang
+sau một cú chuyển tư thế nhanh.
+"""
+
+from __future__ import annotations
+
 import time
-from collections import deque
+
 import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
 
-from config import load_settings
-from model import FallDetectionLSTM, normalize_single_frame_keypoints, SEQ_LEN, FEATURE_DIM, FRAME_STRIDE
+import posture
+from posture import has_torso
+from config import Settings, load_settings
+from model import (
+    FEATURE_DIM,
+    FRAME_STRIDE,
+    SEQ_LEN,
+    FallDetectionLSTM,
+    normalize_single_frame_keypoints,
+)
 from notifier import FallAlertNotifier
+from renderer import draw_hud, draw_person
+from track_state import PersonTrackState
 
-# Toàn bộ tham số (nguồn video, đường dẫn trọng số, token Telegram, các ngưỡng lọc)
-# được nạp từ biến môi trường hoặc file .env — xem config.py và .env.example
+WINDOW_TITLE = "Multi-Person Fall Detection System (Bi-LSTM + YOLOv8-Pose)"
+YOLO_CONFIDENCE = 0.4
+STALE_CHECK_INTERVAL = 60
 
-class PersonTrackState:
-    """Quản lý lịch sử 30 frames và trạng thái của từng người (track_id)"""
-    def __init__(self, seq_len=30):
-        self.buffer = deque(maxlen=seq_len)
-        self.fall_prob = 0.0
-        self.fall_streak = 0
-        self.is_fallen = False
-        self.last_seen_frame = 0
 
-def main():
+def _load_lstm(
+    settings: Settings,
+    device: torch.device,
+) -> tuple[FallDetectionLSTM, int, int]:
+    """Nạp mô hình Bi-LSTM từ file trọng số và đọc siêu tham số đã lưu kèm."""
+    checkpoint = torch.load(settings.lstm_weights, map_location=device)
+    seq_len = int(checkpoint.get("seq_len", SEQ_LEN))
+    feature_dim = int(checkpoint.get("feature_dim", FEATURE_DIM))
+    frame_stride = int(checkpoint.get("frame_stride", FRAME_STRIDE))
+
+    model = FallDetectionLSTM(input_dim=feature_dim, seq_len=seq_len).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+    print(f"✅ Đã nạp {settings.lstm_weights} (Seq_Len={seq_len}, Stride={frame_stride})")
+    return model, seq_len, frame_stride
+
+
+def _predict_batch(
+    model: FallDetectionLSTM,
+    sequences: list[np.ndarray],
+    device: torch.device,
+) -> list[float]:
+    """Chạy Bi-LSTM cho nhiều người trong một lần forward, trả về xác suất ngã."""
+    if not sequences:
+        return []
+
+    batch = torch.tensor(np.array(sequences), dtype=torch.float32).to(device)
+    with torch.no_grad():
+        logits = model(batch)
+        probs = torch.sigmoid(logits).cpu().numpy()
+    return np.atleast_1d(probs).astype(float).tolist()
+
+
+def _step_people(
+    states: list[PersonTrackState],
+    keypoints: np.ndarray,
+    frame_idx: int,
+    frame_stride: int,
+    settings: Settings,
+    model: FallDetectionLSTM,
+    device: torch.device,
+    now: float,
+) -> None:
+    """Cập nhật bộ đệm, chạy dự đoán và cập nhật kết luận cho từng người."""
+    angles = [
+        posture.direction_from_vertical_deg(person_keypoints, settings.min_conf_keypoint)
+        for person_keypoints in keypoints
+    ]
+    torso_visible = [
+        has_torso(person_keypoints, settings.min_conf_keypoint)
+        for person_keypoints in keypoints
+    ]
+
+    for index, state in enumerate(states):
+        if frame_idx % frame_stride != 0:
+            continue
+        feature, valid_kpts, _ = normalize_single_frame_keypoints(keypoints[index])
+        if valid_kpts >= settings.min_valid_keypoints:
+            state.record_frame(feature)
+
+    # Chỉ chạy LSTM cho những người có torso nhìn rõ — chặn false positive
+    # khi chỉ thấy mặt/đầu gần camera.
+    ready_indices = [
+        i for i, state in enumerate(states)
+        if state.is_ready and torso_visible[i]
+    ]
+    probabilities = _predict_batch(
+        model,
+        [states[i].sequence() for i in ready_indices],
+        device,
+    )
+    prob_by_index = dict(zip(ready_indices, probabilities))
+
+    for index, state in enumerate(states):
+        state.tick(now, angles[index], prob_by_index.get(index))
+
+
+def _prune_stale(
+    tracks: dict[int, PersonTrackState],
+    frame_idx: int,
+    max_inactive_frames: int,
+) -> dict[int, PersonTrackState]:
+    """Xoá trạng thái của những ID đã rời khỏi khung hình quá lâu."""
+    return {
+        track_id: state
+        for track_id, state in tracks.items()
+        if frame_idx - state.last_seen_frame <= max_inactive_frames
+    }
+
+
+def _has_people(results) -> bool:
+    """Kết quả YOLO có chứa ít nhất một người đang được bám vết hay không."""
+    if not results:
+        return False
+    boxes = results[0].boxes
+    return (
+        boxes is not None
+        and boxes.id is not None
+        and results[0].keypoints is not None
+    )
+
+
+def main() -> None:
     settings = load_settings()
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🚀 Khởi động hệ thống trên thiết bị: {device}")
 
     if not settings.telegram_enabled:
         print("⚠️  Chưa cấu hình TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — cảnh báo chỉ in ra terminal.")
 
-    # 1. Load mô hình YOLOv8-Pose
     pose_model = YOLO(settings.yolo_weights)
-
-    # 2. Load mô hình Bi-LSTM + Attention từ file trọng số
-    checkpoint = torch.load(settings.lstm_weights, map_location=device)
-    seq_len = checkpoint.get('seq_len', SEQ_LEN)
-    feature_dim = checkpoint.get('feature_dim', FEATURE_DIM)
-    frame_stride = checkpoint.get('frame_stride', FRAME_STRIDE)
-
-    lstm_model = FallDetectionLSTM(input_dim=feature_dim, seq_len=seq_len).to(device)
-    lstm_model.load_state_dict(checkpoint['model_state_dict'])
-    lstm_model.eval()
-    print(f"✅ Đã nạp thành công {settings.lstm_weights} (Seq_Len={seq_len}, Stride={frame_stride})")
-
-    # 3. Khởi tạo bộ gửi thông báo Telegram và Quản lý đa đối tượng
+    lstm_model, seq_len, frame_stride = _load_lstm(settings, device)
     notifier = FallAlertNotifier(
         settings.telegram_bot_token,
         settings.telegram_chat_id,
         cooldown_sec=settings.alert_cooldown_sec,
     )
-    tracks = {}  # Dict: {track_id: PersonTrackState}
 
-    cap = cv2.VideoCapture(settings.video_source)
-    if not cap.isOpened():
+    capture = cv2.VideoCapture(settings.video_source)
+    if not capture.isOpened():
         print(f"❌ Không thể mở nguồn video: {settings.video_source}")
         return
 
+    tracks: dict[int, PersonTrackState] = {}
     frame_idx = 0
-    prev_time = time.time()
+    previous_time = time.monotonic()
 
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
+    while capture.isOpened():
+        ok, frame = capture.read()
+        if not ok:
             break
 
         frame_idx += 1
+        now = time.monotonic()
+        annotated = frame
 
-        # 4. Chạy YOLOv8-Pose + ByteTrack để bám theo nhiều người
         results = pose_model.track(
             frame,
             persist=True,
             tracker="bytetrack.yaml",
-            conf=0.4,
-            verbose=False
+            conf=YOLO_CONFIDENCE,
+            verbose=False,
         )
 
-        ready_track_ids = []
-        batch_sequences = []
-
-        if results and results[0].boxes is not None and results[0].boxes.id is not None:
-            boxes_xyxy = results[0].boxes.xyxy.cpu().numpy().astype(int)
+        if _has_people(results):
+            boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
             track_ids = results[0].boxes.id.cpu().numpy().astype(int)
-            keypoints_data = results[0].keypoints.data.cpu().numpy() # (N, 17, 3)
+            keypoints = results[0].keypoints.data.cpu().numpy()
 
-            # Duyệt qua từng người trong khung hình
-            for i, track_id in enumerate(track_ids):
-                if track_id not in tracks:
-                    tracks[track_id] = PersonTrackState(seq_len=seq_len)
+            annotated = results[0].plot(boxes=False)
 
-                state = tracks[track_id]
+            states: list[PersonTrackState] = []
+            for track_id in track_ids:
+                state = tracks.get(int(track_id))
+                if state is None:
+                    state = PersonTrackState(seq_len=seq_len)
+                    state.configure_verifier(settings.build_verifier())
+                    tracks[int(track_id)] = state
                 state.last_seen_frame = frame_idx
+                states.append(state)
 
-                # Chỉ trích xuất và đẩy vào hàng đợi theo đúng bước nhảy FRAME_STRIDE (giống lúc Train)
-                if frame_idx % frame_stride == 0:
-                    feat, valid_kpts, aspect_ratio = normalize_single_frame_keypoints(keypoints_data[i])
+            _step_people(
+                states,
+                keypoints,
+                frame_idx,
+                frame_stride,
+                settings,
+                lstm_model,
+                device,
+                now,
+            )
 
-                    # Chỉ cập nhật nếu nhìn thấy đủ khớp xương (tránh bị che khuất)
-                    if valid_kpts >= settings.min_valid_keypoints:
-                        state.buffer.append(feat)
+            for index, track_id in enumerate(track_ids):
+                state = states[index]
+                draw_person(annotated, boxes[index], int(track_id), state)
+                if state.is_fallen:
+                    notifier.trigger_alert(annotated, int(track_id), state.fall_prob)
 
-                    # Nếu người này đã tích lũy đủ 30 frames thì gom vào Batch để dự đoán
-                    if len(state.buffer) == seq_len:
-                        ready_track_ids.append(track_id)
-                        batch_sequences.append(np.array(state.buffer, dtype=np.float32))
+        if frame_idx % STALE_CHECK_INTERVAL == 0:
+            tracks = _prune_stale(tracks, frame_idx, settings.max_inactive_frames)
 
-            # 5. Chạy dự đoán Bi-LSTM cho tất cả mọi người cùng lúc (Batch Inference)
-            if len(batch_sequences) > 0:
-                batch_tensor = torch.tensor(np.array(batch_sequences), dtype=torch.float32, device=device)
-                with torch.no_grad():
-                    logits = lstm_model(batch_tensor)
-                    probs = torch.sigmoid(logits).cpu().numpy()
-                    if probs.ndim == 0:
-                        probs = np.array([probs])
+        fps = 1.0 / max(now - previous_time, 1e-5)
+        previous_time = now
+        draw_hud(annotated, fps, len(tracks))
 
-                for tid, prob in zip(ready_track_ids, probs):
-                    st = tracks[tid]
-                    st.fall_prob = float(prob)
-
-                    # Bộ lọc chống báo giả: kiểm tra số lần dự đoán liên tiếp
-                    if st.fall_prob >= settings.fall_prob_threshold:
-                        st.fall_streak += 1
-                    else:
-                        st.fall_streak = max(0, st.fall_streak - 1)
-
-                    st.is_fallen = (st.fall_streak >= settings.fall_streak_required)
-
-            # 6. Vẽ khung xương, Bounding Box cho từng người và Gửi cảnh báo nếu ngã
-            annotated_frame = results[0].plot(boxes=False) # Chỉ vẽ khung xương từ YOLO
-
-            for i, track_id in enumerate(track_ids):
-                x1, y1, x2, y2 = boxes_xyxy[i]
-                st = tracks[track_id]
-
-                if st.is_fallen:
-                    color = (0, 0, 255) # Đỏ: Phát hiện ngã
-                    label = f"ID #{track_id} | FALL! ({st.fall_prob*100:.0f}%)"
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
-                    cv2.putText(annotated_frame, label, (x1, max(25, y1 - 10)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-                    # Kích hoạt gửi thông báo kèm ảnh về điện thoại
-                    notifier.trigger_alert(annotated_frame, track_id, st.fall_prob)
-                else:
-                    color = (0, 255, 0) # Xanh lá: Bình thường
-                    buf_progress = len(st.buffer)
-                    if buf_progress < seq_len:
-                        label = f"ID #{track_id} | Collecting ({buf_progress}/{seq_len})"
-                    else:
-                        label = f"ID #{track_id} | Normal ({st.fall_prob*100:.0f}%)"
-
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, label, (x1, max(25, y1 - 10)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        else:
-            annotated_frame = frame
-
-        # 7. Dọn dẹp bộ nhớ các track_id đã rời khỏi camera
-        if frame_idx % 60 == 0:
-            stale_ids = [
-                tid for tid, st in tracks.items()
-                if frame_idx - st.last_seen_frame > settings.max_inactive_frames
-            ]
-            for tid in stale_ids:
-                del tracks[tid]
-
-        # Hiển thị tốc độ FPS
-        curr_time = time.time()
-        fps = 1.0 / max(curr_time - prev_time, 1e-5)
-        prev_time = curr_time
-        cv2.putText(annotated_frame, f"FPS: {fps:.1f} | People: {len(tracks)}", (15, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-
-        cv2.imshow("Multi-Person Fall Detection System (Bi-LSTM + YOLOv8-Pose)", annotated_frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        cv2.imshow(WINDOW_TITLE, annotated)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-    cap.release()
+    capture.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

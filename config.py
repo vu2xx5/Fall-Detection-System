@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from fall_verifier import FallVerifier
+
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 DEFAULT_VIDEO_SOURCE = "0"
@@ -17,8 +19,13 @@ DEFAULT_LSTM_WEIGHTS = "best_fall_lstm.pth"
 DEFAULT_YOLO_WEIGHTS = "yolov8n-pose.pt"
 DEFAULT_ALERT_COOLDOWN_SEC = 60
 DEFAULT_FALL_PROB_THRESHOLD = 0.75
-DEFAULT_FALL_STREAK_REQUIRED = 3
+DEFAULT_FALL_PROB_RESET = 0.40
+DEFAULT_UPRIGHT_TORSO_ANGLE = 35.0
+DEFAULT_FALL_TORSO_ANGLE = 55.0
+DEFAULT_FALL_TRANSITION_SEC = 1.5
+DEFAULT_FALL_HOLD_SEC = 1.0
 DEFAULT_MIN_VALID_KEYPOINTS = 6
+DEFAULT_MIN_CONF_KEYPOINT = 0.30
 DEFAULT_MAX_INACTIVE_FRAMES = 150
 
 
@@ -49,15 +56,33 @@ class Settings:
     yolo_weights: str
     telegram_bot_token: str
     telegram_chat_id: str
+
     alert_cooldown_sec: int
-    fall_prob_threshold: float
-    fall_streak_required: int
-    min_valid_keypoints: int
     max_inactive_frames: int
+    min_valid_keypoints: int
+    min_conf_keypoint: float
+
+    fall_prob_threshold: float
+    fall_prob_reset: float
+    upright_torso_angle_deg: float
+    fall_torso_angle_deg: float
+    fall_transition_sec: float
+    fall_hold_sec: float
 
     @property
     def telegram_enabled(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    def build_verifier(self) -> FallVerifier:
+        """Tạo bộ xác minh ngã với các ngưỡng đã cấu hình."""
+        return FallVerifier(
+            prob_threshold=self.fall_prob_threshold,
+            prob_reset=self.fall_prob_reset,
+            upright_angle_deg=self.upright_torso_angle_deg,
+            horizontal_angle_deg=self.fall_torso_angle_deg,
+            transition_sec=self.fall_transition_sec,
+            hold_sec=self.fall_hold_sec,
+        )
 
 
 def _parse_video_source(raw: str) -> str | int:
@@ -95,8 +120,13 @@ def load_settings() -> Settings:
         telegram_bot_token=_env_str("TELEGRAM_BOT_TOKEN", ""),
         telegram_chat_id=_env_str("TELEGRAM_CHAT_ID", ""),
         alert_cooldown_sec=_env_int("ALERT_COOLDOWN_SEC", DEFAULT_ALERT_COOLDOWN_SEC),
-        fall_prob_threshold=_env_float("FALL_PROB_THRESHOLD", DEFAULT_FALL_PROB_THRESHOLD),
-        fall_streak_required=_env_int("FALL_STREAK_REQUIRED", DEFAULT_FALL_STREAK_REQUIRED),
-        min_valid_keypoints=_env_int("MIN_VALID_KEYPOINTS", DEFAULT_MIN_VALID_KEYPOINTS),
         max_inactive_frames=_env_int("MAX_INACTIVE_FRAMES", DEFAULT_MAX_INACTIVE_FRAMES),
+        min_valid_keypoints=_env_int("MIN_VALID_KEYPOINTS", DEFAULT_MIN_VALID_KEYPOINTS),
+        min_conf_keypoint=_env_float("MIN_CONF_KEYPOINT", DEFAULT_MIN_CONF_KEYPOINT),
+        fall_prob_threshold=_env_float("FALL_PROB_THRESHOLD", DEFAULT_FALL_PROB_THRESHOLD),
+        fall_prob_reset=_env_float("FALL_PROB_RESET", DEFAULT_FALL_PROB_RESET),
+        upright_torso_angle_deg=_env_float("UPRIGHT_TORSO_ANGLE", DEFAULT_UPRIGHT_TORSO_ANGLE),
+        fall_torso_angle_deg=_env_float("FALL_TORSO_ANGLE", DEFAULT_FALL_TORSO_ANGLE),
+        fall_transition_sec=_env_float("FALL_TRANSITION_SEC", DEFAULT_FALL_TRANSITION_SEC),
+        fall_hold_sec=_env_float("FALL_HOLD_SEC", DEFAULT_FALL_HOLD_SEC),
     )

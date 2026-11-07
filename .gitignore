@@ -21,10 +21,17 @@ venv/
 env/
 ENV/
 
+# ===== Testing =====
+.pytest_cache/
+htmlcov/
+.coverage
+
 # ===== Jupyter =====
 .ipynb_checkpoints/
 
-# ===== PyTorch / Ultralytics =====
+# ===== PyTorch / Ultralytics - Trọng số model (file lớn) =====
+*.pth
+*.pt
 runs/
 weights/
 *.pt.tmp
