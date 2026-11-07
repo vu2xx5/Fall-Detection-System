@@ -1,0 +1,49 @@
+# ===== Thông tin nhạy cảm (KHÔNG commit) =====
+.env
+*.env
+!.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# ===== Môi trường ảo =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== PyTorch / Ultralytics =====
+runs/
+weights/
+*.pt.tmp
+yolo*.cache
+*.cache
+
+# ===== Dữ liệu & kết quả chạy =====
+datasets/
+data/
+*.mp4
+*.avi
+*.mov
+*.mkv
+alerts/
+logs/
+*.log
+
+# ===== IDE / Hệ điều hành =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

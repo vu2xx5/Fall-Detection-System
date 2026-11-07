@@ -1,0 +1,14 @@
+# ===== Fall Detection System - Thư viện phụ thuộc =====
+# Cài đặt:  pip install -r requirements.txt
+# Python khuyến nghị: 3.10 - 3.13
+
+# Deep learning
+torch>=2.2.0
+numpy>=1.26.0
+
+# Nhận diện tư thế & bám vết đối tượng (đã bao gồm opencv-python)
+ultralytics>=8.2.0
+opencv-python>=4.9.0
+
+# Gửi cảnh báo Telegram
+requests>=2.31.0
