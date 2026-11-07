@@ -23,8 +23,10 @@ LABEL_MIN_Y = 22
 def _label_for(track_id: int, state: PersonTrackState) -> tuple[str, tuple[int, int, int], int]:
     """Chọn nhãn, màu và độ dày nét vẽ theo trạng thái của một người."""
     if state.is_fallen:
+        sec = state.seconds_fallen
+        time_str = f" {sec:.0f}s" if sec is not None else ""
         return (
-            f"ID #{track_id} | FALL! {state.fall_prob * 100:.0f}%",
+            f"ID #{track_id} | FALLEN!{time_str} ({state.fall_prob * 100:.0f}%)",
             COLOR_FALLEN,
             3,
         )
@@ -38,8 +40,9 @@ def _label_for(track_id: int, state: PersonTrackState) -> tuple[str, tuple[int, 
         )
 
     # Chưa bị kết luận ngã: hiển thị lý do để dễ gỡ lỗi báo giả.
+    reason_label = state.reason.replace("_", " ").title()
     return (
-        f"ID #{track_id} | {state.reason} {state.fall_prob * 100:.0f}%",
+        f"ID #{track_id} | {reason_label} {state.fall_prob * 100:.0f}%",
         COLOR_NORMAL,
         2,
     )

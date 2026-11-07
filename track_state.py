@@ -58,11 +58,17 @@ class PersonTrackState:
         """Lý do của kết luận hiện tại, dùng cho nhãn hiển thị."""
         return self.verdict.reason.value
 
+    @property
+    def seconds_fallen(self) -> float | None:
+        """Thời gian đã ngã tính bằng giây (None nếu chưa ngã)."""
+        return self._verifier.seconds_fallen
+
     def tick(
         self,
         now: float,
         torso_angle_deg: float | None,
         fall_prob: float | None = None,
+        is_sitting: bool = False,
     ) -> Verdict:
         """Cập nhật một mẫu quan sát tại thời điểm ``now`` (giây).
 
@@ -72,5 +78,10 @@ class PersonTrackState:
         if fall_prob is not None:
             self.fall_prob = float(fall_prob)
 
-        self.verdict = self._verifier.update(now, torso_angle_deg, self.fall_prob)
+        self.verdict = self._verifier.update(
+            now,
+            torso_angle_deg,
+            self.fall_prob,
+            is_sitting=is_sitting,
+        )
         return self.verdict

@@ -86,6 +86,10 @@ def _step_people(
         has_torso(person_keypoints, settings.min_conf_keypoint)
         for person_keypoints in keypoints
     ]
+    sitting_flags = [
+        posture.is_sitting(person_keypoints, settings.min_conf_keypoint)
+        for person_keypoints in keypoints
+    ]
 
     for index, state in enumerate(states):
         if frame_idx % frame_stride != 0:
@@ -108,7 +112,12 @@ def _step_people(
     prob_by_index = dict(zip(ready_indices, probabilities))
 
     for index, state in enumerate(states):
-        state.tick(now, angles[index], prob_by_index.get(index))
+        state.tick(
+            now,
+            angles[index],
+            prob_by_index.get(index),
+            is_sitting=sitting_flags[index],
+        )
 
 
 def _prune_stale(

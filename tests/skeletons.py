@@ -122,3 +122,33 @@ def head_and_arms(conf: float = HIGH_CONF) -> np.ndarray:
     _set(kpts, 9, 330, 320, conf)
     _set(kpts, 10, 470, 320, conf)
     return kpts
+
+
+def sitting_floor(conf: float = HIGH_CONF) -> np.ndarray:
+    """Người ngồi bệt trên sàn: thân thẳng đứng nhưng chân co sát hông."""
+    kpts = _blank()
+    _set(kpts, NOSE, 400, 310, conf)
+    _set(kpts, LEFT_SHOULDER, 380, 350, conf)
+    _set(kpts, RIGHT_SHOULDER, 420, 350, conf)
+    _set(kpts, LEFT_HIP, 385, 450, conf)
+    _set(kpts, RIGHT_HIP, 415, 450, conf)
+    _set(kpts, 13, 388, 430, conf)
+    _set(kpts, 14, 412, 430, conf)
+    _set(kpts, 15, 388, 460, conf)
+    _set(kpts, 16, 412, 460, conf)
+    return kpts
+
+
+def sitting_chair(conf: float = HIGH_CONF) -> np.ndarray:
+    """Người ngồi ghế: đùi vuông góc với thân, cẳng chân thõng xuống."""
+    kpts = _blank()
+    _set(kpts, NOSE, 400, 210, conf)
+    _set(kpts, LEFT_SHOULDER, 380, 250, conf)
+    _set(kpts, RIGHT_SHOULDER, 420, 250, conf)
+    _set(kpts, LEFT_HIP, 385, 350, conf)
+    _set(kpts, RIGHT_HIP, 415, 350, conf)
+    _set(kpts, 13, 440, 355, conf)
+    _set(kpts, 14, 460, 355, conf)
+    _set(kpts, 15, 440, 430, conf)
+    _set(kpts, 16, 460, 430, conf)
+    return kpts

@@ -82,3 +82,25 @@ class TestLowConfidence:
         kpts = skeletons.standing(conf=0.2)
         assert posture.torso_angle_deg(kpts, min_conf=0.3) is None
         assert posture.torso_angle_deg(kpts, min_conf=0.15) is not None
+
+
+class TestSittingAndStanding:
+    def test_standing_is_not_sitting(self) -> None:
+        kpts = skeletons.standing()
+        assert posture.is_standing(kpts) is True
+        assert posture.is_sitting(kpts) is False
+
+    def test_sitting_floor_detected(self) -> None:
+        kpts = skeletons.sitting_floor()
+        assert posture.is_sitting(kpts) is True
+        assert posture.is_standing(kpts) is False
+
+    def test_sitting_chair_detected(self) -> None:
+        kpts = skeletons.sitting_chair()
+        assert posture.is_sitting(kpts) is True
+        assert posture.is_standing(kpts) is False
+
+    def test_lying_is_neither_standing_nor_sitting(self) -> None:
+        kpts = skeletons.lying()
+        assert posture.is_standing(kpts) is False
+        assert posture.is_sitting(kpts) is False

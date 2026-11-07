@@ -114,3 +114,75 @@ def is_horizontal(
     """Thân người có đang nằm ngang ít nhất ``min_angle_deg`` hay không."""
     direction = direction_from_vertical_deg(keypoints, min_conf)
     return direction is not None and direction >= min_angle_deg
+
+
+def is_sitting(
+    keypoints: np.ndarray,
+    min_conf: float = DEFAULT_MIN_CONF,
+) -> bool:
+    """Xác định đối tượng có đang ở tư thế ngồi hay không (ngồi ghế hoặc ngồi bệt).
+
+    Khi ngồi, thân người có thể thẳng đứng (gần 0 độ) tương tự như lúc đứng,
+    nhưng đầu gối/cổ chân bị co gập hoặc nằm gần ngang tầm hông, và tỉ lệ
+    khung xương không thon dài như lúc đứng.
+    """
+    shoulders = _midpoint(keypoints, SHOULDERS, min_conf)
+    hips = _midpoint(keypoints, HIPS, min_conf)
+    if shoulders is None or hips is None:
+        return False
+
+    angle = direction_from_vertical_deg(keypoints, min_conf)
+    if angle is None or angle > 45.0:
+        # Nếu thân đã nằm ngang (> 45-55 độ) thì là đang nằm hoặc cúi gập
+        return False
+
+    torso = shoulders - hips
+    torso_len = float(np.linalg.norm(torso))
+    if torso_len < MIN_TORSO_LENGTH_PX:
+        return False
+
+    knees = _midpoint(keypoints, (13, 14), min_conf)
+    ankles = _midpoint(keypoints, (15, 16), min_conf)
+
+    # 1. Kiểm tra góc khớp hông (Shoulder - Hip - Knee)
+    if knees is not None:
+        v_thigh = knees - hips
+        norm_th = float(np.linalg.norm(v_thigh))
+        if norm_th > 1e-5:
+            cos_hip = float(np.dot(torso, v_thigh) / (torso_len * norm_th))
+            hip_joint_angle = math.degrees(math.acos(max(-1.0, min(1.0, cos_hip))))
+            # Khi đứng: vai-hông hướng lên, hông-gối hướng xuống -> góc ~ 180 độ
+            # Khi ngồi: đùi đưa ngang ra phía trước -> góc < 135 độ
+            if hip_joint_angle < 135.0:
+                return True
+
+        # Độ chênh lệch Y giữa hông và đầu gối nhỏ (ngồi bệt / khoanh chân)
+        if (knees[1] - hips[1]) < 0.45 * torso_len:
+            return True
+
+    # 2. Kiểm tra vị trí cổ chân so với hông
+    if ankles is not None:
+        if (ankles[1] - hips[1]) < 0.65 * torso_len:
+            return True
+
+    # 3. Kiểm tra tỉ lệ bounding box của keypoints nhìn rõ
+    valid_pts = [keypoints[i][:2] for i in range(len(keypoints)) if _is_visible(keypoints, i, min_conf)]
+    if len(valid_pts) >= 6:
+        pts = np.asarray(valid_pts, dtype=np.float64)
+        w = float(np.max(pts[:, 0]) - np.min(pts[:, 0]))
+        h = float(np.max(pts[:, 1]) - np.min(pts[:, 1]))
+        if h > 1e-5 and (w / h) >= 0.75:
+            return True
+
+    return False
+
+
+def is_standing(
+    keypoints: np.ndarray,
+    min_conf: float = DEFAULT_MIN_CONF,
+) -> bool:
+    """Xác định đối tượng có đang ở tư thế đứng thẳng thật sự (không phải ngồi)."""
+    angle = direction_from_vertical_deg(keypoints, min_conf)
+    if angle is None or angle > 35.0:
+        return False
+    return not is_sitting(keypoints, min_conf)

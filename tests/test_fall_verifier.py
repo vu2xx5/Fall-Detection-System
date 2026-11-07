@@ -199,3 +199,76 @@ class TestConstructorValidation:
     def test_rejects_inverted_angles(self) -> None:
         with pytest.raises(ValueError):
             FallVerifier(upright_angle_deg=70.0, horizontal_angle_deg=55.0)
+
+
+class TestSittingThenLieDown:
+    """Người ngồi xuống rồi ngả lưng nằm không được coi là ngã."""
+
+    def test_sit_then_lie_down_never_confirms(self) -> None:
+        verifier = FallVerifier()
+        # 1. Đang đứng
+        for moment in [0.0, 0.5, 1.0]:
+            verifier.update(moment, UPRIGHT_ANGLE, PROB_LOW, is_sitting=False)
+
+        # 2. Ngồi xuống sàn (lưng thẳng nhưng is_sitting = True)
+        for moment in [1.2, 1.5, 2.0, 2.5]:
+            v = verifier.update(moment, UPRIGHT_ANGLE, PROB_LOW, is_sitting=True)
+            assert v.confirmed is False
+            assert v.reason is VerdictReason.SITTING
+
+        # 3. Ngả lưng nằm xuống sàn, dù model Bi-LSTM có cho xác suất cao
+        verdicts = []
+        for moment in [2.8, 3.0, 3.5, 4.0, 5.0]:
+            v = verifier.update(moment, HORIZONTAL_ANGLE, PROB_HIGH, is_sitting=False)
+            verdicts.append(v)
+
+        assert any(v.confirmed for v in verdicts) is False
+        assert verdicts[-1].reason is VerdictReason.SLOW_LIE_DOWN
+
+
+class TestLatchedFallenState:
+    """Khi đã ngã thật, trạng thái ĐỎ phải duy trì liên tục kể cả khi model prob tụt."""
+
+    def test_stays_confirmed_when_lying_still(self) -> None:
+        verifier = FallVerifier()
+        # 1. Đang đứng
+        for moment in [0.0, 0.5, 1.0]:
+            verifier.update(moment, UPRIGHT_ANGLE, PROB_LOW)
+
+        # 2. Cú ngã nhanh xảy ra
+        for moment in [1.1, 1.5, 2.2]:
+            verifier.update(moment, HORIZONTAL_ANGLE, PROB_HIGH)
+
+        v_confirmed = verifier.update(2.5, HORIZONTAL_ANGLE, PROB_HIGH)
+        assert v_confirmed.confirmed is True
+        assert v_confirmed.reason is VerdictReason.CONFIRMED
+
+        # 3. Nằm yên trên sàn, Bi-LSTM xác suất tụt xuống 0.05
+        # Trạng thái PHẢI DUY TRÌ CONFIRMED (ĐỎ)
+        for moment in [3.0, 4.0, 6.0, 10.0]:
+            v_still = verifier.update(moment, HORIZONTAL_ANGLE, 0.05)
+            assert v_still.confirmed is True
+            assert v_still.reason is VerdictReason.CONFIRMED
+            assert verifier.is_fallen is True
+            assert verifier.seconds_fallen is not None
+            assert verifier.seconds_fallen > 0.0
+
+    def test_recovers_only_after_standing_up_steadily(self) -> None:
+        verifier = FallVerifier(recovery_sec=2.0)
+        # 1. Đang đứng rồi ngã
+        for moment in [0.0, 1.0]:
+            verifier.update(moment, UPRIGHT_ANGLE, PROB_LOW)
+        for moment in [1.1, 2.5]:
+            verifier.update(moment, HORIZONTAL_ANGLE, PROB_HIGH)
+
+        assert verifier.is_fallen is True
+
+        # 2. Nạn nhân đứng dậy nhưng mới được 1.0 giây (< 2.0s)
+        v_stand_short = verifier.update(3.5, UPRIGHT_ANGLE, PROB_LOW, is_sitting=False)
+        assert v_stand_short.confirmed is True  # Vẫn ĐỎ!
+
+        # 3. Nạn nhân đứng vững đủ 2.0 giây (từ 3.5s đến 5.6s)
+        v_recovered = verifier.update(5.6, UPRIGHT_ANGLE, PROB_LOW, is_sitting=False)
+        assert v_recovered.confirmed is False  # ĐÃ HẾT ĐỎ!
+        assert v_recovered.reason is VerdictReason.UPRIGHT
+        assert verifier.is_fallen is False
