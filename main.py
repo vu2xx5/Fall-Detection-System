@@ -178,6 +178,7 @@ def main() -> None:
         frame_idx += 1
         now = time.monotonic()
         annotated = frame
+        people_count = 0
 
         results = pose_model.track(
             frame,
@@ -191,6 +192,7 @@ def main() -> None:
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
             track_ids = results[0].boxes.id.cpu().numpy().astype(int)
             keypoints = results[0].keypoints.data.cpu().numpy()
+            people_count = len(track_ids)
 
             annotated = results[0].plot(boxes=False)
 
@@ -226,7 +228,7 @@ def main() -> None:
 
         fps = 1.0 / max(now - previous_time, 1e-5)
         previous_time = now
-        draw_hud(annotated, fps, len(tracks))
+        draw_hud(annotated, fps, people_count)
 
         cv2.imshow(WINDOW_TITLE, annotated)
         if cv2.waitKey(1) & 0xFF == ord("q"):

@@ -31,7 +31,7 @@ Hệ thống thị giác máy tính phát hiện **té ngã theo thời gian th�
 |---|---|
 | **Đa đối tượng** | Theo dõi và dự đoán độc lập cho từng người nhờ ByteTrack, không lẫn trạng thái giữa các ID |
 | **Batch inference** | Tất cả người đủ 30 frame được đưa vào model trong **một lần forward** duy nhất → tăng FPS |
-| **Chống báo giả 3 lớp** | Ngưỡng xác suất + chuỗi dự đoán liên tiếp + lọc theo số keypoint nhìn rõ |
+| **Chống báo giả** | Lọc keypoint, xác minh chuyển động đứng-sang-nằm, và dùng xác suất AI để rút ngắn thời gian xác nhận |
 | **Cảnh báo bất đồng bộ** | Gửi Telegram chạy trong thread riêng, không chặn vòng lặp video |
 | **Cooldown theo ID** | Mỗi người chỉ gửi tối đa 1 cảnh báo / 60 giây, tránh spam |
 | **Đa nguồn video** | Webcam, file video, hoặc luồng RTSP từ camera IP |
@@ -163,8 +163,7 @@ Mọi tham số nằm trong file `.env` (được `.gitignore` bỏ qua). Sau kh
 | `TELEGRAM_BOT_TOKEN` | *(trống)* | Token bot lấy từ [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | *(trống)* | Chat ID nhận cảnh báo, lấy từ [@userinfobot](https://t.me/userinfobot) |
 | `ALERT_COOLDOWN_SEC` | `60` | Mỗi ID chỉ gửi tối đa 1 cảnh báo trong khoảng này (giây) |
-| `FALL_PROB_THRESHOLD` | `0.75` | Ngưỡng xác suất để coi một dự đoán là "ngã" |
-| `FALL_STREAK_REQUIRED` | `3` | Số dự đoán "ngã" **liên tiếp** bắt buộc trước khi cảnh báo |
+| `FALL_PROB_THRESHOLD` | `0.75` | Ngưỡng xác suất làm bằng chứng AI; nếu mô hình bỏ sót, chuyển động ngã nhanh được xác nhận bằng hình học sau 1.5 giây nằm ngang |
 | `MIN_VALID_KEYPOINTS` | `6` | Số keypoint tối thiểu nhìn rõ (trên 17) để dùng frame đó |
 | `MAX_INACTIVE_FRAMES` | `150` | Xoá trạng thái ID nếu biến mất quá số frame này (~5 giây ở 30 FPS) |
 
@@ -189,7 +188,7 @@ Cửa sổ hiển thị kết quả với:
 - **Khung xương 17 điểm** do YOLOv8-Pose vẽ.
 - **Bounding box xanh lá** — người bình thường, kèm nhãn `Collecting (x/30)` khi còn đang tích luỹ frame, hoặc `Normal (xx%)` khi đã có dự đoán.
 - **Bounding box đỏ + nhãn `FALL! (xx%)`** — phát hiện té ngã; cảnh báo Telegram được kích hoạt ngay.
-- **Góc trên trái:** FPS hiện tại và tổng số người đang được theo dõi.
+- **Góc trên trái:** FPS hiện tại và số người đang được phát hiện trong khung hình.
 
 Nhấn **`q`** để thoát.
 
@@ -235,13 +234,13 @@ Báo động giả là vấn đề lớn nhất của hệ thống fall detectio
 
 **Lớp 1 — Lọc chất lượng dữ liệu vào.** Một frame chỉ được đưa vào buffer nếu có ít nhất `MIN_VALID_KEYPOINTS` (mặc định 6/17) khớp xương nhìn rõ (`conf ≥ 0.2`). Khi người bị khuất sau bàn, cột, hay ra khỏi rìa khung hình, dữ liệu rác không làm nhiễu chuỗi.
 
-**Lớp 2 — Lọc theo ngưỡng xác suất.** Chỉ dự đoán có `P(ngã) ≥ FALL_PROB_THRESHOLD` (mặc định `0.75`) mới được tính là một "phiếu ngã".
+**Lớp 2 — Bằng chứng từ mô hình.** Dự đoán có `P(ngã) ≥ FALL_PROB_THRESHOLD` (mặc định `0.75`) cho phép xác nhận nhanh hơn. Nếu mô hình bỏ sót, cú chuyển nhanh từ đứng sang nằm ngang và duy trì ít nhất 1.5 giây vẫn được xác nhận bằng hình học.
 
-**Lớp 3 — Lọc theo thời gian (streak).** Cần `FALL_STREAK_REQUIRED` (mặc định 3) dự đoán ngã **liên tiếp** mới kích hoạt cảnh báo. Mỗi dự đoán không-ngã sẽ giảm streak đi 1 (`max(0, streak - 1)`), nên một cú nhảy, cúi xuống nhặt đồ, hay ngồi xuống ghế nhanh sẽ không đủ để tạo chuỗi.
+**Lớp 3 — Xác minh tư thế và chuyển động.** Hệ thống phải thấy người đứng trước, chuyển sang nằm ngang trong `FALL_TRANSITION_SEC`, rồi duy trì tư thế ngang. Khi AI có bằng chứng ngã, thời gian giữ tối thiểu là `FALL_HOLD_SEC`; nếu AI bỏ sót, tư thế ngang phải giữ ít nhất 1.5 giây. Người nằm sẵn từ lúc mới xuất hiện, ngồi ổn định rồi nằm, hoặc nằm xuống chậm sẽ không được xác nhận là ngã.
 
 Ngoài ra, `ALERT_COOLDOWN_SEC` (mặc định 60s) giới hạn tần suất gửi tin theo từng `track_id`, nên người đã ngã và đang nằm dưới sàn sẽ không làm ngập hộp thư Telegram.
 
-> **Tinh chỉnh:** môi trường nhiều báo giả → tăng `FALL_PROB_THRESHOLD` lên `0.85` hoặc `FALL_STREAK_REQUIRED` lên `5`. Hệ thống phản ứng chậm → giảm `FALL_STREAK_REQUIRED` xuống `2`, nhưng đổi lại độ chính xác giảm.
+> **Tinh chỉnh:** nếu góc thân thường xuyên nhiễu, tăng `FALL_TORSO_ANGLE` hoặc `FALL_HOLD_SEC`. Nếu muốn AI cần chắc chắn hơn để rút ngắn thời gian xác nhận, tăng `FALL_PROB_THRESHOLD`.
 
 ---
 
@@ -274,7 +273,7 @@ curl "https://api.telegram.org/bot<TOKEN>/getMe"
 | `FileNotFoundError: best_fall_lstm.pth` | Chạy `python main.py` từ sai thư mục. Phải `cd` vào thư mục gốc dự án. |
 | `⚠️ Không thể kết nối Telegram API` | Sai token, chưa bấm Start với bot, hoặc máy không có Internet. Kiểm tra bằng `getMe`. |
 | Không thấy bbox nào | Người ở quá xa, ngược sáng, hoặc bị che khuất. Hạ `conf` trong `pose_model.track(...)` (mặc định `0.4`). |
-| Báo ngã liên tục khi không ai ngã | Tăng `FALL_PROB_THRESHOLD` và `FALL_STREAK_REQUIRED`; kiểm tra lại `aspect_ratio` có bị nhiễu do bbox sai. |
+| Báo ngã liên tục khi không ai ngã | Tăng `FALL_HOLD_SEC` hoặc `FALL_TORSO_ANGLE`; kiểm tra vai, hông và bounding box có bị nhiễu hay không. |
 | FPS quá thấp | Chạy CPU. Cài PyTorch bản CUDA/MPS, hoặc giảm độ phân giải đầu vào, hoặc tăng `FRAME_STRIDE` (lấy mẫu thưa hơn). |
 | `IndexError` ở `boxes_xyxy[i]` | Bounding box và keypoints lệch số lượng — thường do tracker trả về `id` rỗng. Khởi động lại tiến trình. |
 

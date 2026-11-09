@@ -8,10 +8,9 @@ cũng không biết tư thế thay đổi nhanh hay chậm. Lớp này bổ sung
 2. **Động học** — tư thế phải chuyển từ thẳng đứng sang nằm ngang trong thời
    gian ngắn. Người từ từ nằm xuống (``> FALL_TRANSITION_SEC``) bị loại.
 
-Cuối cùng, cả tư thế nằm ngang và xác suất cao đều phải được giữ liên tục ít
-nhất ``FALL_HOLD_SEC`` giây mới xác nhận. Đây là điểm khác biệt cốt lõi so với
-cách đếm theo frame trước kia: 3 frame chỉ là ~0,1 giây, còn 1 giây là 1 giây
-thật, nên một gai nhiễu đơn lẻ không thể kích hoạt cảnh báo.
+Cuối cùng, tư thế nằm ngang phải được giữ liên tục ít nhất ``FALL_HOLD_SEC``
+giây mới xác nhận khi mô hình đồng ý. Nếu mô hình bỏ sót, một cú chuyển nhanh
+từ đứng sang nằm ngang phải được giữ ít nhất 1.5 giây để xác nhận bằng hình học.
 """
 
 from __future__ import annotations
@@ -40,6 +39,9 @@ class Verdict:
 
     confirmed: bool
     reason: VerdictReason
+
+
+GEOMETRY_FALLBACK_HOLD_SEC = 1.5
 
 
 class FallVerifier:
@@ -200,7 +202,7 @@ class FallVerifier:
         horizontal_for = now - self._horizontal_since
         prob_for = 0.0 if self._high_prob_since is None else now - self._high_prob_since
 
-        # AI đồng ý nếu xác suất đang duy trì cao hoặc vừa có đợt prob cao (>= 0.15s) trong 2.5s qua
+        # AI evidence shortens the hold; geometry still confirms when the model misses.
         has_ai_fall_evidence = (
             prob_for >= self._hold_sec
             or (self._last_confirmed_prob_time is not None and (now - self._last_confirmed_prob_time <= 2.5))
@@ -209,7 +211,12 @@ class FallVerifier:
         self._prev_angle = torso_angle_deg
         self._last_update_time = now
 
-        if horizontal_for >= self._hold_sec and has_ai_fall_evidence:
+        required_hold = (
+            self._hold_sec
+            if has_ai_fall_evidence
+            else max(self._hold_sec, GEOMETRY_FALLBACK_HOLD_SEC)
+        )
+        if horizontal_for >= required_hold:
             # Xác nhận cú ngã thành công và kích hoạt chốt trạng thái ngã
             self._is_fallen = True
             self._fallen_since = now

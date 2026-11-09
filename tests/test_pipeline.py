@@ -194,8 +194,8 @@ class TestSlowLieDownIsNeverFall:
         assert states[0].reason == "slow_lie_down"
 
 
-class TestThresholdIsConfigurable:
-    def test_stricter_probability_threshold_blocks_alert(self) -> None:
+class TestModelConfidenceFallback:
+    def test_geometric_fall_is_detected_when_model_confidence_is_low(self) -> None:
         base = make_settings()
         strict = Settings(
             video_source=base.video_source,
@@ -220,7 +220,7 @@ class TestThresholdIsConfigurable:
 
         verdict_history, states = simulate([person], strict)
 
-        assert first_fallen_time(verdict_history, 0) is None
+        assert first_fallen_time(verdict_history, 0) is not None
 
 
 class TestBufferWarmup:

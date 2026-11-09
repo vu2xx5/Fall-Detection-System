@@ -148,23 +148,34 @@ class TestNoUprightObserved:
 
 
 class TestProbabilityGate:
-    def test_below_threshold_blocks_confirmation(self) -> None:
+    def test_geometry_confirms_fast_fall_when_model_misses(self) -> None:
         samples = timeline(0.0, 1.0, 0.1, UPRIGHT_ANGLE, PROB_LOW)
-        samples += timeline(1.1, 6.0, 0.1, HORIZONTAL_ANGLE, PROB_MID)
+        samples += timeline(1.1, 3.0, 0.1, HORIZONTAL_ANGLE, PROB_LOW)
+
+        verdicts = run(FallVerifier(), samples)
+
+        assert any_confirmed(verdicts) is True
+        assert verdicts[-1].reason is VerdictReason.CONFIRMED
+
+    def test_probability_cannot_replace_upright_to_horizontal_transition(self) -> None:
+        samples = timeline(0.0, 3.0, 0.1, HORIZONTAL_ANGLE, PROB_HIGH)
 
         verdicts = run(FallVerifier(), samples)
 
         assert any_confirmed(verdicts) is False
-        assert verdicts[-1].reason is VerdictReason.CONFIRMING
+        assert verdicts[-1].reason is VerdictReason.NO_TRANSITION
 
-    def test_single_probability_spike_does_not_confirm(self) -> None:
+    def test_single_probability_spike_does_not_shorten_geometry_hold(self) -> None:
         samples = timeline(0.0, 1.0, 0.1, UPRIGHT_ANGLE, PROB_LOW)
         samples.append((1.1, HORIZONTAL_ANGLE, PROB_HIGH))
         samples += timeline(1.2, 5.0, 0.1, HORIZONTAL_ANGLE, PROB_LOW)
 
         verdicts = run(FallVerifier(), samples)
 
-        assert any_confirmed(verdicts) is False
+        confirmed_at = next(
+            moment for (moment, _, _), verdict in zip(samples, verdicts) if verdict.confirmed
+        )
+        assert confirmed_at >= 2.6
 
     def test_hysteresis_keeps_clock_through_dip(self) -> None:
         """Xác suất dao động nhẹ quanh ngưỡng không được làm đứt đồng hồ."""
